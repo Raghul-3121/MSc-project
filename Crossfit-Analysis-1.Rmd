@@ -1,0 +1,202 @@
+---
+title: "Crossfit - Analysis"
+output: html_notebook
+---
+
+```{r}
+# We cannot analyze location-wise dropout rates because our dataset contains only one type of location.
+# Likewise we don't have data for weekends, so we can't identify the trends in weekends.
+# I see missing data in the membership type – 22 records.
+# The entire "appointments" column is missing.
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(readr)
+library(scales)
+```
+
+```{r}
+df <- read_csv("all_attendances_2025-02-09T12_11_52.026555Z.csv")
+```
+
+```{r}
+# from this we can see that 22 null columns in Membership Type
+# The entire column is missing in Appointment Details
+
+print(colSums(is.na(df)))
+```
+
+```{r}
+# Convert to POSIXct format
+df$`Start Datetime` <- as.POSIXct(df$`Start Datetime`, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
+
+# Extracting seperately
+df <- df %>%
+  mutate(Date = as.Date(`Start Datetime`),
+         Month = format(Date, "%Y-%m"),  # Year-Month
+         Weekday = weekdays(Date),       # Day of the week
+         Hour = hour(`Start Datetime`),  # Extract hour
+         Year = year(`Start Datetime`),  # Extract Year
+         Quarter = quarter(`Start Datetime`, with_year = TRUE))  # Extract Quarter
+
+```
+
+```{r}
+# Attendance by Day
+df_weekday <- df %>%
+  group_by(Weekday) %>%
+  summarise(Total_Attendance = n()) %>%
+  mutate(Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")))
+
+ggplot(df_weekday, aes(x = Weekday, y = Total_Attendance)) +
+  geom_bar(stat = "identity", fill = "cornflowerblue") +
+  labs(title = "Trends by days", x = "Day", y = "Total Attendees") +
+  theme_minimal()
+
+```
+
+```{r}
+# Quarter 2 and 4 have a high number of people going to the gym.  
+# but, we cannot come to conclusion because we lack complete data for Q1 2024 (January data is missing) and do not have full data for Q1 2025.  
+
+df_quarterly <- df %>%
+  mutate(Quarter = quarter(`Start Datetime`, with_year = TRUE)) %>%
+  count(Quarter) %>%
+  mutate(Percentage = round(100 * n / sum(n), 1))
+
+ggplot(df_quarterly, aes(x = factor(Quarter, levels = unique(Quarter)), y = n, group = 1)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "black", size = 3) +
+  geom_text(aes(label = paste0(n, " (", Percentage, "%)")), vjust = -0.5, size = 3.5) + 
+  labs(title = "Quarterly Trends", x = "Quarter", y = "Total Classes Attended") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# this graph shows the people attendance rate by month 
+# Where we have a huge drop out in december month and a rise in january. this is maybe because of some new year resolution  
+# Monthly Trends
+df_monthly <- df %>%
+  count(Month) %>%
+  mutate(Percentage = round(n / sum(n) * 100, 1))
+
+ggplot(df_monthly, aes(x = factor(Month, levels = unique(Month)), y = n, group = 1)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 2) +
+  geom_text(aes(label = paste0(n, " (", Percentage, "%)")), vjust = -0.5, size = 4) +
+  labs(title = "Monthly Trends", x = "Month", y = "Total Classes Attended") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# This shows the top 5 clients with the highest attendance and the bottom 5 with the lowest. 
+# So there must lead to some possible dropout the lower attendance clients.
+# Action: Engage low-attendance clients with personalized offers or follow-ups to reduce churn.  
+
+# Individual Attendance
+df_individual <- df %>%
+  group_by(`Client ID`) %>%
+  summarise(Total_Attendance = n()) %>%
+  arrange(desc(Total_Attendance))
+
+# Top 5
+top_clients <- df_individual %>% 
+  head(5)
+ggplot(top_clients, aes(x = reorder(`Client ID`, Total_Attendance), y = Total_Attendance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Top Attending Clients", x = "Client ID", y = "Total Attendances") +
+  theme_minimal() +
+  coord_flip()
+
+# Least 5 
+bottom_clients <- df_individual %>%
+  tail(5) 
+ggplot(bottom_clients, aes(x = reorder(`Client ID`, Total_Attendance), y = Total_Attendance)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Least Active Clients", x = "Client ID", y = "Total Attendances") +
+  theme_minimal() +
+  coord_flip()
+
+```
+
+```{r}
+# This shows that most people attend sessions at 5:30 AM and 6 PM. So may be people in the afternoon session is less becuase of the work shedule.
+# Action: we can allocate more resources during these peak hours.  
+
+# Class attendance by timing
+df_class_attendance <- df %>%
+  count(`Class Name`, name = "Client_Count") %>%
+  mutate(Percentage = Client_Count / sum(Client_Count) * 100) %>%
+  arrange(desc(Client_Count))
+
+ggplot(df_class_attendance, aes(x = "", y = Client_Count, fill = `Class Name`)) +
+  geom_bar(stat = "identity", width = 1, color = "black") +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = sprintf("%d (%.1f%%)", Client_Count, Percentage)), 
+            position = position_stack(vjust = 0.5), size = 4, color = "white") +
+  labs(title = "Class Attendance Distribution", fill = "Class Name") +
+  theme_void() +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+# In this graph, we can see that the coaches with the most inactive clients are Amy Flinn, Jose Espejo, and James Rankin. So to improve this we can change some coach or conducts some training program for the coach. so we can identify why people are droping out. 
+# Action: Consider replacing these coaches or providing additional training to improve client engagement.  
+
+# inactive clients per coach
+
+unique(df$`Clients → Client Active`)
+
+df_inactive <- df %>%
+  filter(tolower(`Clients → Client Active`) == "inactive") %>%
+  count(`Class → Coach Name`, name = "Inactive_Count") %>%
+  arrange(desc(Inactive_Count))
+
+if (nrow(df_inactive) > 0) {
+  df_plot <- head(df_inactive, 10)
+  ggplot(df_plot, aes(x = reorder(`Class → Coach Name`, -Inactive_Count), y = Inactive_Count)) +
+    geom_col(fill = "red") +
+    geom_text(aes(label = Inactive_Count), vjust = -0.5, size = 4) +
+    labs(title = "Coaches with the Most Inactive Clients",
+         x = "Coach Name", y = "Inactive Clients") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+} else {
+  print("No inactive clients found.")
+}
+
+```
+
+```{r}
+
+# This plot shows the number of people who drop out over months. It indicates that dropout rates have decreased month by month, which is good.
+# this shows that the people are giving importance to become healthy than before.
+# Action: Run special offers before peak dropout months.
+
+# Dropout Trends
+df_dropout <- df %>%
+  filter(`Clients → Client Active` == "Inactive") %>%
+  count(Month = format(`Start Datetime`, "%Y-%m"))
+
+ggplot(df_dropout, aes(Month, n, group = 1)) +
+  geom_line(color = "red") +
+  geom_point(color = "black") +
+  geom_text(aes(label = n), vjust = -0.5) +
+  labs(title = "Dropout Trends", x = "Month", y = "Inactive Clients") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+# with these kind of data we can able to build a model like 
+# Attendance Prediction Model - ARIMA -Predict future attendance based on historical data to optimize class scheduling and resource allocation.
+# Churn Prediction Model - classification - Identify clients likely to become inactive so gym managers can take preventive action.
+```
+
