@@ -1,0 +1,190 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+install.packages(c("survminer"))
+
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(brolgar)   
+library(lme4)        
+library(nlme)       
+library(survival)
+library(survminer)
+library(ggplot2)
+```
+
+```{r}
+# Load the attendance data
+df <- read_csv("all_attendances_2025-02-09T12_11_52.026555Z.csv")
+
+# Basic cleaning and transformation
+df <- df %>%
+  mutate(Start_Datetime = ymd_hms(`Start Datetime`),
+         Start_Date = as.Date(Start_Datetime),
+         Year = year(Start_Datetime),
+         Month = month(Start_Datetime, label = TRUE, abbr = TRUE),
+         Week = isoweek(Start_Datetime)) %>%
+  arrange(`Client ID`, Start_Date)
+
+```
+
+```{r}
+df_individual <- df %>%
+  group_by(`Client ID`, Year, Month) %>%
+  summarise(Attendance_Count = n(), .groups = "drop")
+
+```
+
+```{r}
+top_clients <- df %>%
+  count(`Client ID`, name = "Total_Attendance") %>%
+  arrange(desc(Total_Attendance)) %>%
+  slice_head(n = 10)
+
+df_top_clients <- df %>%
+  filter(`Client ID` %in% top_clients$`Client ID`) %>%
+  group_by(`Client ID`, Year, Month) %>%
+  summarise(Attendance_Count = n(), .groups = "drop")
+
+```
+
+```{r}
+df_consistency <- df %>%
+  group_by(`Client ID`) %>%
+  summarise(Total_Visits = n(),
+            First_Visit = min(Start_Datetime),
+            Last_Visit = max(Start_Datetime),
+            Active_Duration = as.numeric(difftime(Last_Visit, First_Visit, units = "days")),
+            .groups = "drop") %>%
+  mutate(Active_Duration = ifelse(Active_Duration == 0, 1, Active_Duration),
+         Visit_Frequency = Total_Visits / Active_Duration,
+         Attendance_Category = case_when(
+           Total_Visits == 1 ~ "One-Time Visitor",
+           Visit_Frequency >= 0.5 ~ "Frequent Visitor",
+           Visit_Frequency >= 0.3 ~ "Regular Visitor",
+           Visit_Frequency >= 0.2 ~ "Moderate Visitor",
+           Visit_Frequency >= 0.05 ~ "Rare Visitor",
+           TRUE ~ "Very Rare Visitor"
+         ))
+view(df_consistency)
+```
+
+```{r}
+# Define date range
+start_date <- as.Date("2024-02-01")
+end_date <- as.Date("2025-01-31")
+
+# Filter data to the target date range
+df <- df %>%
+  filter(Start_Date >= start_date & Start_Date <= end_date)
+
+# Identify top 10 clients by total attendance in the filtered period
+top_clients <- df %>%
+  count(`Client ID`, name = "Total_Visits") %>%
+  arrange(desc(Total_Visits)) %>%
+  slice_head(n = 10)
+
+# Filter data to only include those top 10 clients
+df_top10 <- df %>%
+  filter(`Client ID` %in% top_clients$`Client ID`) %>%
+  arrange(`Client ID`, Start_Datetime)
+
+```
+
+```{r}
+ggplot(df_top10, aes(x = Start_Datetime, y = as.factor(`Client ID`), color = as.factor(`Client ID`))) +
+  geom_jitter(height = 0.2, alpha = 0.7) +
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%b %Y", 
+                   limits = c(as.POSIXct(start_date), as.POSIXct(end_date + 1))) +
+  labs(title = "Attendance Trend of Top 10 Clients (Feb 2024 - Jan 2025)",
+       x = "Attendance Date",
+       y = "Client ID",
+       color = "Client ID") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+#Clients like 5173366 and 4477798 have dense, consistent dots spread evenly across the entire year — they’re the kind of members who show up multiple times a week and stick to it.
+#In contrast, someone like 2314733 or 1154782 has more scattered dots, showing that they may have phases of activity followed by gaps — maybe they’re more seasonal or irregular in their visits.
+#Another observation is that some clients (like 4975179) seem to have a very steady rhythm — not necessarily very frequent, but spaced out almost weekly with very little deviation.
+```
+
+```{r}
+# Calculate cumulative visits for top 10 clients
+df_top10_cum <- df_top10 %>%
+  group_by(`Client ID`) %>%
+  arrange(Start_Datetime) %>%
+  mutate(Cumulative_Visits = row_number())
+
+# Plotting cumulative graph
+ggplot(df_top10_cum, aes(x = Start_Datetime, y = Cumulative_Visits, color = as.factor(`Client ID`))) +
+  geom_line(size = 1) +
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(title = "Cumulative Attendance Over Time (Top 10 Clients)",
+       x = "Month",
+       y = "Cumulative Visits",
+       color = "Client ID") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+#we can see that Client 4477798 (the dark blue line) had a very consistent and steep slope, meaning they visited very frequently and kept that pace throughout the year.
+
+#On the other hand, Client 2863359 (green line) starts off strong but has some flat periods around October and November — that shows a possible break or drop-off in attendance.
+#A consistent slope = regularity. Steep slope = high frequency.
+#It shows that high attendance doesn’t always mean consistency 
+```
+
+```{r}
+df_weekly_top10 <- df_top10 %>%
+  mutate(Week = isoweek(Start_Datetime),
+         Year = year(Start_Datetime),
+         YearWeek = paste(Year, sprintf("%02d", Week), sep = "-")) %>%
+  group_by(`Client ID`, YearWeek) %>%
+  summarise(Weekly_Count = n(), .groups = "drop")
+
+ggplot(df_weekly_top10, aes(x = YearWeek, y = as.factor(`Client ID`), fill = Weekly_Count)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightyellow", high = "darkblue") +
+  labs(title = "Weekly Attendance Heatmap (Top 10 Clients)",
+       x = "Week", y = "Client ID", fill = "Visits") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+```{r}
+#Client 4477798 stands out with dark blue almost every week — they were extremely consistent, likely coming multiple times nearly every week.
+
+#But clients like 1154782 or 2314733 show gaps and light patches, which suggest they may have taken breaks, had inconsistent routines, or dropped out during certain months.
+
+#this chart gives us a temporal attendance for each person which shows how their habits evolved week to week.
+
+```
+
+```{r}
+df_top10$DayOfWeek <- factor(weekdays(df_top10$Start_Datetime),
+                              levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+attendance_by_day_top10 <- df_top10 %>%
+  group_by(`Client ID`, DayOfWeek) %>%
+  summarise(Count = n(), .groups = "drop")
+
+ggplot(attendance_by_day_top10, aes(x = DayOfWeek, y = as.factor(`Client ID`), fill = Count)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Heatmap of Attendance by Day of Week (Top 10 Clients)",
+       x = "Day of Week", y = "Client ID", fill = "Count") +
+  theme_minimal()
+
+```
+```{r}
+#in this the client 4477798 (darkest row) attends heavily across all weekdays, especially on Tuesdays and Wednesdays — which shows a really stable mid-week routine.
+
+#Whereas, Client 4975179 seems to prefer Tuesday and Thursday, while skipping Mondays.
+
+#And Client 1154782 almost never shows up on Fridays, which could reflect either a work schedule or personal preference.
+```
